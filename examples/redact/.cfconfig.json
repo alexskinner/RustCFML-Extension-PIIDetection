@@ -1,0 +1,10 @@
+{
+  "extensions": {
+    "settings": {
+      "pii": {
+        "modelPath": "../../models/ettin-17m-nemotron-pii",
+        "preload": true
+      }
+    }
+  }
+}

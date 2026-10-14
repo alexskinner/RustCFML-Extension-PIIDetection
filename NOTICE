@@ -1,0 +1,17 @@
+rustcfml-pii
+Copyright 2026 RustCFML Team
+
+This product includes ONNX exports of the ettin-*-nemotron-pii models,
+copyright Kalyan KS, MIT licensed (https://huggingface.co/kalyan-ks), which
+are built on the Ettin encoders (Johns Hopkins University CLSP, MIT) and
+fine-tuned on the Nemotron-PII dataset (NVIDIA, CC BY 4.0). Full attribution
+is in models/README.md. The exports are not inside a built `.rcx`; the
+extension fetches them from this repository at run time.
+
+This product is built against RustCFML (https://github.com/RustCFML/RustCFML),
+copyright the RustCFML Team, MIT licensed.
+
+A compiled `.rcx` statically links this project's Rust dependencies and their
+transitive dependencies. Full third-party license texts and per-crate copyright
+notices are in THIRD-PARTY.txt, which is packaged inside the `.rcx` alongside
+this file.

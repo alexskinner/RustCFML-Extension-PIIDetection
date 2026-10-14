@@ -1,0 +1,48 @@
+rustcfml-pii — copyright and licensing
+======================================
+This extension's own source code is dual-licensed, at your option, under
+either of:
+
+  * Apache License, Version 2.0 — see LICENSE-APACHE
+  * MIT License                 — see LICENSE-MIT
+
+SPDX: `MIT OR Apache-2.0`.
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in this work shall be dual-licensed as above, without
+any additional terms or conditions.
+
+
+The model
+---------
+
+**ettin-17m-nemotron-pii** (and the 32m / 68m sizes) — the detector that does
+all of the actual work. Copyright Kalyan KS, 2026. **MIT licence.**
+https://huggingface.co/kalyan-ks/ettin-17m-nemotron-pii
+
+The ONNX graphs in `models/` are exports of those published weights, made by
+`scripts/export-onnx.py` and otherwise unmodified. They are redistributed here
+under the model's MIT licence, with its model card beside each export. The
+model is built on the **Ettin encoders** (Johns Hopkins University CLSP, MIT)
+and fine-tuned on **Nemotron-PII** (NVIDIA, CC BY 4.0). `models/README.md`
+carries the full attribution, including the citation the authors ask for.
+
+Everything in this repository and in a built `.rcx` is therefore under
+permissive terms: MIT or Apache-2.0 for the code, MIT for the model, CC BY 4.0
+attribution for the data it learned from, satisfied by the notice files.
+
+**RustCFML** — the CFML engine this extends, and the `.rcx` extension ABI it is
+written against. Copyright the RustCFML Team, MIT licensed.
+https://github.com/RustCFML/RustCFML
+
+
+Software this extension is built on
+-----------------------------------
+
+A built `.rcx` is not source: it is a compiled shared library that statically
+links its Rust dependencies — an ONNX inference engine (`tract`), a tokenizer
+(`tokenizers`), an HTTP client (`ureq`), a hash (`sha2`) and a JSON codec
+(`serde_json`), plus their transitive dependencies. Distributing one therefore
+carries those crates' notice obligations. The complete set is reproduced in
+THIRD-PARTY.txt, which is generated from the resolved dependency graph and
+packaged inside every `.rcx`. See NOTICE for the short form.

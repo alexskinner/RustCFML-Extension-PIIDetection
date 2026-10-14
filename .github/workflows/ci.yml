@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  # Kept in step with release.yml. Pinned rather than floating: the ABI wrapper
+  # is a path dependency on an engine checkout, so "latest" would make a green
+  # branch go red the moment the engine moves.
+  RUSTCFML_REF: v0.734.0
+  # The model is IN the repository (models/, an export of MIT-licensed
+  # weights), so nothing is fetched from anywhere: the tests and the self-test
+  # both point at the checkout.
+  MODEL_DIR: ${{ github.workspace }}/rustcfml-pii/models/ettin-17m-nemotron-pii
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: rustcfml-pii
+
+      - uses: actions/checkout@v5
+        with:
+          repository: RustCFML/RustCFML
+          ref: ${{ env.RUSTCFML_REF }}
+          path: RustCFML
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rustcfml-pii
+
+      - name: Format
+        working-directory: rustcfml-pii
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: rustcfml-pii
+        run: cargo clippy --all-targets -- -D warnings
+
+      # With PII_MODEL_DIR set the real-model tests RUN — they compare this
+      # crate's spans against onnxruntime's on the same sentences, which is
+      # the only check that catches a decoding or chunking mistake. (The
+      # export script verified ONNX against PyTorch; this verifies tract
+      # against onnxruntime.)
+      - name: Test
+        working-directory: rustcfml-pii
+        env:
+          PII_MODEL_DIR: ${{ env.MODEL_DIR }}
+        run: cargo test
+
+      # THIRD-PARTY.txt is generated and committed. A dependency change that
+      # does not refresh it ships a `.rcx` whose notices are wrong, which is a
+      # licensing problem rather than a tidiness one.
+      - name: Third-party notices are up to date
+        working-directory: rustcfml-pii
+        run: |
+          cargo install cargo-about --locked --features cli --version 0.9.1
+          ./scripts/gen-licenses.sh
+          git diff --exit-code THIRD-PARTY.txt \
+            || { echo "::error::THIRD-PARTY.txt is stale — run ./scripts/gen-licenses.sh and commit"; exit 1; }
+
+      # Packaging breaks on its own: a crate that compiles can still fail to
+      # produce a loadable `.rcx`. Catch it on the branch, not at the tag.
+      - name: Package, load, and run the self-test
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -e
+          gh release download "$RUSTCFML_REF" \
+            --repo RustCFML/RustCFML \
+            --pattern 'rustcfml-linux-x86_64' \
+            --output engine
+          chmod +x engine
+          ./engine ext build rustcfml-pii
+          ./engine ext install "$(ls rustcfml-pii/*.rcx)" --dir rustcfml-pii/examples/redact/extensions
+
+          # The example's own .cfconfig.json points modelPath at the checkout's
+          # models/ directory, so this run is hermetic.
+          cd rustcfml-pii/examples/redact
+          "$GITHUB_WORKSPACE/engine" selftest.cfm | tee /tmp/selftest.txt
+          grep -q 'all checks passed' /tmp/selftest.txt
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -1,0 +1,194 @@
+name: Release Extension
+
+on:
+  push:
+    tags: ["v*"]
+  # Buildable on demand, so the artifacts can be produced and smoke-tested
+  # without cutting a tag first.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # The engine checkout this builds against.
+  #
+  # PINNED, not `main`. `rustcfml-module` is a PATH dependency (the wrapper is
+  # not on crates.io yet), so the engine tree IS a build input: an unpinned
+  # `main` would mean a tag of this repo produces different bytes depending on
+  # the day. It also documents the floor honestly — this is the oldest engine
+  # the produced .rcx is known to load into. Bump it deliberately.
+  RUSTCFML_REF: v0.734.0
+
+jobs:
+  # One job per platform, each producing a SINGLE-PLATFORM .rcx.
+  #
+  # `ext build` will happily merge a second platform's library into an existing
+  # archive (the "fat extension" shape), and that is right for hand-building a
+  # file you carry between two machines you own. It is the wrong shape to
+  # publish: every download would then carry four libraries so that one can be
+  # used. A fresh checkout has no prior .rcx, so each job packages exactly its own.
+  build:
+    strategy:
+      # Do not cancel siblings: a Windows-only fault should not destroy the
+      # evidence from three healthy targets.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macos-aarch64
+            engine: rustcfml-macos-aarch64
+            exe: ""
+          - os: ubuntu-latest
+            name: linux-x86_64
+            engine: rustcfml-linux-x86_64
+            exe: ""
+          - os: ubuntu-24.04-arm
+            name: linux-aarch64
+            engine: rustcfml-linux-aarch64
+            exe: ""
+          - os: windows-latest
+            name: windows-x86_64
+            engine: rustcfml-windows-x86_64.exe
+            exe: ".exe"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # Sibling checkouts, because Cargo.toml points at
+      # `../RustCFML/crates/rustcfml-module`.
+      - uses: actions/checkout@v5
+        with:
+          path: rustcfml-pii
+
+      - uses: actions/checkout@v5
+        with:
+          repository: RustCFML/RustCFML
+          ref: ${{ env.RUSTCFML_REF }}
+          path: RustCFML
+
+      # Plain `stable`, deliberately UNPINNED: an extension crosses the
+      # boundary as a C ABI over opaque handles, so it shares neither
+      # generics, layout, nor allocator with the host. Any rustc that can build
+      # a cdylib produces a loadable one.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # The RELEASED engine binary, not one built from the checkout beside it.
+      # `ext build` embeds the host's own target triple and ABI major into the
+      # manifest, so the packaging tool must be the same engine an operator will
+      # install this into.
+      - name: Fetch the released engine
+        shell: bash
+        run: |
+          # NOT `--output rustcfml`: the engine is checked out into a directory
+          # called `RustCFML/`, and macOS and Windows runners have
+          # case-insensitive filesystems, so `rustcfml` collides with it.
+          gh release download "$RUSTCFML_REF" \
+            --repo RustCFML/RustCFML \
+            --pattern '${{ matrix.engine }}' \
+            --output "engine${{ matrix.exe }}"
+          chmod +x "engine${{ matrix.exe }}"
+          ./engine${{ matrix.exe }} --version
+          ./engine${{ matrix.exe }} ext --help
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # Everything in this graph is pure Rust — tract, `tokenizers` with
+      # `fancy-regex` rather than oniguruma, `ureq` with rustls — so nothing
+      # here configures OpenSSL or a C library. If a platform build ever fails
+      # on a native dependency, a feature flag has drifted; this is the step
+      # that will fail and this comment is why.
+      - name: Build and package the .rcx
+        shell: bash
+        run: ./engine${{ matrix.exe }} ext build rustcfml-pii
+
+      # Loading it is the only check that means anything. A .rcx can be
+      # perfectly well-formed and still fail to load, and none of that is
+      # visible from packaging alone. This smoke test deliberately uses NO
+      # settings, so it also FETCHES the model from this repository's main
+      # branch — 68 MB — verifies its digest and runs a detection: the whole
+      # path an operator takes on first start, on this platform.
+      - name: Install it into a stock engine and run it
+        shell: bash
+        run: |
+          set -e
+          RCX=$(ls rustcfml-pii/*.rcx)
+          ./engine${{ matrix.exe }} ext install "$RCX"
+          ./engine${{ matrix.exe }} ext list
+
+          cat > smoke.cfm <<'CFM'
+          <cfscript>
+          info = piiLoad();
+          if ( !info.ready ) throw( message = "the model did not load: " & info.error );
+          spans = piiDetect( "Contact John Smith at john@example.com or +44 7700 900123." );
+          got = arrayToList( arrayMap( spans, function( s ) { return s.type & "=" & s.text; } ), "|" );
+          if ( got NEQ "first_name=John|last_name=Smith|email=john@example.com|phone_number=44 7700 900123" ) {
+              throw( message = "unexpected spans: " & got );
+          }
+          if ( piiMask( "Mail john@example.com" ) NEQ "Mail [EMAIL]" ) {
+              throw( message = "masking is off: " & piiMask( "Mail john@example.com" ) );
+          }
+          if ( arrayLen( piiTypes() ) NEQ 55 ) throw( message = "expected 55 types" );
+          writeOutput( "loaded ok — model fetched, detection and masking verified in " & info.loadMillis & " ms" & chr(10) );
+          </cfscript>
+          CFM
+          ./engine${{ matrix.exe }} smoke.cfm
+
+      - name: Name the artifact for its platform
+        shell: bash
+        run: |
+          RCX=$(ls rustcfml-pii/*.rcx)
+          BASE=$(basename "$RCX" .rcx)
+          mkdir -p dist
+          cp "$RCX" "dist/${BASE}-${{ matrix.name }}.rcx"
+          ls -l dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*.rcx
+
+  release:
+    needs: build
+    # A manual run should still build and smoke-test everything; it just must
+    # not try to publish a release for a tag that does not exist.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Collect
+        run: |
+          mkdir -p release
+          find artifacts -name '*.rcx' -exec cp {} release/ \;
+          ls -l release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          body: |
+            Install the file for **your platform** into a stock RustCFML engine:
+
+            ```sh
+            rustcfml ext install pii-<version>-linux-x86_64.rcx --user
+            rustcfml ext list
+            ```
+
+            …or drop it into your application's `extensions/` directory. The
+            model (68 MB, MIT) is fetched from this repository on the first
+            start; `models/README.md` has its attribution.
+
+            Each `.rcx` carries the library for one platform only. Install the
+            wrong one and the engine says so by name.
+
+            Built against RustCFML `${{ env.RUSTCFML_REF }}`, which is also the
+            minimum engine version.
+          files: release/*

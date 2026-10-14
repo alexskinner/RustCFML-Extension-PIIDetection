@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+.DS_Store
+# `rustcfml ext build` output — a packaged extension carrying the built library.
+*.rcx
+/examples/*/extensions/

@@ -1,0 +1,61 @@
+[package]
+name         = "rustcfml-pii"
+version      = "0.1.0"
+edition      = "2021"
+rust-version = "1.85"
+license      = "MIT OR Apache-2.0"
+description  = "Local PII detection for RustCFML — typed entity spans, masking and a contextual-sensitivity verdict from a 10M-parameter ONNX model that runs in-process, with no API to call."
+repository   = "https://github.com/alexskinner/RustCFML-Extension-PIIDetection"
+readme       = "README.md"
+keywords     = ["cfml", "rustcfml", "pii", "privacy", "redaction"]
+categories   = ["text-processing"]
+# Not on crates.io: this is distributed as a `.rcx`, built per platform. It also
+# keeps the crate out of its own THIRD-PARTY.txt, which cargo-about would
+# otherwise list as one of its own third-party dependencies.
+publish      = false
+
+[lib]
+# `cdylib` is what a `.rcx` extension ships. `rlib` keeps the same source
+# linkable by the static `rustcfml --build` path, and is what the tests use.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The extension ABI wrapper — the ONLY RustCFML dependency, deliberately.
+# Everything crosses as an opaque handle over a C ABI, so building this needs
+# no engine internals and no matching rustc.
+rustcfml-module = { path = "../RustCFML/crates/rustcfml-module" }
+
+# Inference. tract is pure Rust: no onnxruntime to find at load time, no C++
+# toolchain to build, and the same code on every platform the engine ships for.
+# The model's graph (6-layer transformer, opset 17, symbolic batch/sequence
+# dims) is verified to produce the same logits as onnxruntime.
+tract-onnx = "0.23"
+
+# The model's byte-level BPE tokenizer, read from its own tokenizer.json.
+# `fancy-regex` rather than the default `onig` keeps the build pure Rust —
+# oniguruma is a C library, and a cdylib that needs one is a Windows build
+# problem waiting to happen.
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
+
+# Fetching the model from Hugging Face on first use. rustls, so nothing in this
+# graph builds OpenSSL (the thing that broke the engine's own Windows release
+# at v0.595.0).
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+# Integrity check of a downloaded file against the digest the Hub publishes.
+sha2 = "0.10"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+
+# tract's debug builds re-check every node's output against the shape its
+# analyser inferred. For the exported ModernBERT graph that check is WRONG at
+# one attention-mask `Where`: the analyser records [1,1,seq,seq] where the node
+# legitimately produces [1,1,1,seq] and broadcasts later. Release builds skip
+# the check and the logits match onnxruntime to 1e-5 at every length tested;
+# without this, `cargo test` (a debug build) cannot load the model at all.
+[profile.dev.package.tract-core]
+debug-assertions = false
